@@ -143,32 +143,43 @@ func (sshConn *SSHConnection) Rsync(localDir string, remoteDir string, quiet boo
 
 // hasChanges checks if there are any modified files in localDir since lastSyncTime.
 func hasChanges(localDir string, lastSyncTime time.Time) (bool, string) {
-	var firstModifiedFile string = ""
+	var firstModifiedPath string
+	changeDetected := errors.New("change detected")
 
-	err := filepath.Walk(localDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			if os.IsNotExist(err) {
-				// Handle the case where a file has been removed
-				fmt.Printf("Detected a removed file at: %s\n", path)
-				return errors.New("change detected") // Stop walking
+	err := filepath.Walk(localDir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			if os.IsNotExist(walkErr) {
+				firstModifiedPath = path
+				return changeDetected
 			}
-			return err
+			return walkErr
 		}
 
-		// Check if the file was modified after the last sync time
 		if info.ModTime().After(lastSyncTime) {
-			firstModifiedFile = path
-			return filepath.SkipDir // Skip the rest of the directory if a change is found
+			if info.IsDir() {
+				if firstModifiedPath == "" {
+					firstModifiedPath = path
+				}
+				return nil
+			}
+			firstModifiedPath = path
+			return changeDetected
 		}
 
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, changeDetected) {
+			if firstModifiedPath == "" {
+				firstModifiedPath = localDir
+			}
+			return true, firstModifiedPath
+		}
 		fmt.Printf("Error walking through directory: %v\n", err)
 		return false, ""
 	}
 
-	return firstModifiedFile != "", firstModifiedFile
+	return firstModifiedPath != "", firstModifiedPath
 }
 
 func (sshConn *SSHConnection) SyncDir(localDir string, remoteDir string) {
