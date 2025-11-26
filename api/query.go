@@ -25,20 +25,11 @@ func Query(input Input) (res *http.Response, err error) {
 		return nil, err
 	}
 
-	apiUrl := os.Getenv("RUNPOD_API_URL")
-	if apiUrl == "" {
-		apiUrl = viper.GetString("apiUrl")
-	}
+	apiUrl := resolveAPIURL()
 
-	apiKey := os.Getenv("RUNPOD_API_KEY")
-	if apiKey == "" {
-		apiKey = viper.GetString("apiKey")
-	}
-
-	// Check if the API key is present
-	if apiKey == "" {
-		fmt.Println("API key not found")
-		return nil, errors.New("API key not found")
+	apiKey, err := resolveAPIKey()
+	if err != nil {
+		return nil, err
 	}
 
 	req, err := http.NewRequest("POST", apiUrl, bytes.NewBuffer(jsonValue))
@@ -55,4 +46,36 @@ func Query(input Input) (res *http.Response, err error) {
 
 	client := &http.Client{Timeout: time.Second * 10}
 	return client.Do(req)
+}
+
+func resolveAPIURL() string {
+	if apiUrl := strings.TrimSpace(os.Getenv("RUNPOD_API_URL")); apiUrl != "" {
+		return apiUrl
+	}
+
+	if apiUrl := strings.TrimSpace(viper.GetString("apiUrl")); apiUrl != "" {
+		return apiUrl
+	}
+
+	return "https://api.runpod.io/graphql"
+}
+
+func resolveAPIKey() (string, error) {
+	candidates := []string{
+		os.Getenv("RUNPOD_API_KEY"),
+		os.Getenv("RUNPOD_API_TOKEN"),
+		viper.GetString("apiKey"),
+		viper.GetString("api_key"),
+		viper.GetString("RUNPOD_API_KEY"),
+	}
+
+	for _, candidate := range candidates {
+		apiKey := strings.TrimSpace(candidate)
+		if apiKey != "" {
+			return apiKey, nil
+		}
+	}
+
+	fmt.Println("API key not found")
+	return "", errors.New("API key not found")
 }
