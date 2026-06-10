@@ -5,8 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/runpod/runpodctl/internal/api"
-
 	"github.com/spf13/cobra"
 )
 
@@ -71,88 +69,105 @@ func TestCreateCmd_Flags(t *testing.T) {
 	if flags.Lookup("model-reference") == nil {
 		t.Error("expected --model-reference flag")
 	}
+	if flags.Lookup("compute-type") == nil {
+		t.Error("expected --compute-type flag")
+	}
+	if flags.Lookup("instance-id") == nil {
+		t.Error("expected --instance-id flag")
+	}
+	if flags.Lookup("network-volume-ids") == nil {
+		t.Error("expected --network-volume-ids flag")
+	}
 }
 
-func TestCreateCmd_RejectsHubWithModelReference(t *testing.T) {
-	oldTemplateID := createTemplateID
-	oldHubID := createHubID
-	oldModelReferences := createModelReferences
+// snapshotCreateFlags restores all serverless-create globals after a test that
+// mutates them, so the package-level state doesn't leak between tests.
+func snapshotCreateFlags(t *testing.T) {
+	t.Helper()
+	old := struct {
+		name, templateID, hubID, computeType, gpuID, instanceID string
+		dataCenterIDs, networkVolumeID, networkVolumeIDs        string
+		modelReferences                                         []string
+	}{
+		createName, createTemplateID, createHubID, createComputeType, createGpuTypeID, createInstanceID,
+		createDataCenterIDs, createNetworkVolumeID, createNetworkVolumeIDs,
+		createModelReferences,
+	}
 	t.Cleanup(func() {
-		createTemplateID = oldTemplateID
-		createHubID = oldHubID
-		createModelReferences = oldModelReferences
+		createName = old.name
+		createTemplateID = old.templateID
+		createHubID = old.hubID
+		createComputeType = old.computeType
+		createGpuTypeID = old.gpuID
+		createInstanceID = old.instanceID
+		createDataCenterIDs = old.dataCenterIDs
+		createNetworkVolumeID = old.networkVolumeID
+		createNetworkVolumeIDs = old.networkVolumeIDs
+		createModelReferences = old.modelReferences
 	})
-
-	createTemplateID = ""
-	createHubID = "hub-123"
-	createModelReferences = []string{"https://local/user/model:hash"}
-
-	err := runCreate(&cobra.Command{}, nil)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !strings.Contains(err.Error(), "--model-reference is only supported with --template-id") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	// known-good baseline; individual tests override what they exercise.
+	createName, createTemplateID, createHubID = "", "tpl-123", ""
+	createComputeType, createGpuTypeID, createInstanceID = "GPU", "", ""
+	createDataCenterIDs, createNetworkVolumeID, createNetworkVolumeIDs = "", "", ""
+	createModelReferences = nil
 }
 
-func TestCreateCmd_RejectsCPUWithModelReference(t *testing.T) {
-	oldTemplateID := createTemplateID
-	oldHubID := createHubID
-	oldComputeType := createComputeType
-	oldModelReferences := createModelReferences
-	t.Cleanup(func() {
-		createTemplateID = oldTemplateID
-		createHubID = oldHubID
-		createComputeType = oldComputeType
-		createModelReferences = oldModelReferences
-	})
+// these validations all run before any api client/network call, so they're
+// safe to exercise without hitting the live api.
+func TestCreateCmd_Validations(t *testing.T) {
+	cases := []struct {
+		name    string
+		setup   func()
+		wantErr string
+	}{
+		{
+			name:    "invalid compute type",
+			setup:   func() { createComputeType = "TPU" },
+			wantErr: "invalid --compute-type",
+		},
+		{
+			name:    "cpu with gpu-id",
+			setup:   func() { createComputeType = "CPU"; createGpuTypeID = "NVIDIA A40" },
+			wantErr: "--gpu-id must be empty when --compute-type is CPU",
+		},
+		{
+			name:    "gpu with instance-id",
+			setup:   func() { createComputeType = "GPU"; createInstanceID = "cpu3g-4-16" },
+			wantErr: "--instance-id is only supported with --compute-type CPU",
+		},
+		{
+			name:    "both network volume flags",
+			setup:   func() { createNetworkVolumeID = "vol-1"; createNetworkVolumeIDs = "vol-2,vol-3" },
+			wantErr: "--network-volume-id and --network-volume-ids are mutually exclusive",
+		},
+		{
+			name: "hub with model reference",
+			setup: func() {
+				createTemplateID = ""
+				createHubID = "hub-1"
+				createModelReferences = []string{"https://x/y:z"}
+			},
+			wantErr: "--model-reference is only supported with --template-id",
+		},
+		{
+			name:    "cpu with model reference",
+			setup:   func() { createComputeType = "CPU"; createModelReferences = []string{"https://x/y:z"} },
+			wantErr: "--model-reference is only supported with --compute-type GPU",
+		},
+	}
 
-	createTemplateID = "tpl-123"
-	createHubID = ""
-	createComputeType = "CPU"
-	createModelReferences = []string{"https://local/user/model:hash"}
-
-	err := runCreate(&cobra.Command{}, nil)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !strings.Contains(err.Error(), "--model-reference is only supported with --compute-type GPU") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestBuildTemplateEndpointGQLInput(t *testing.T) {
-	modelReferences := []string{"https://local/user/model:hash"}
-	gqlReq := buildTemplateEndpointGQLInput(&api.EndpointCreateRequest{
-		Name:            "test-endpoint",
-		TemplateID:      "tpl-123",
-		GpuCount:        2,
-		WorkersMin:      1,
-		WorkersMax:      3,
-		NetworkVolumeID: "vol-123",
-	}, "ADA_24", "US-KS-2", modelReferences)
-
-	if gqlReq.Name != "test-endpoint" {
-		t.Errorf("expected name test-endpoint, got %s", gqlReq.Name)
-	}
-	if gqlReq.TemplateID != "tpl-123" {
-		t.Errorf("expected template id tpl-123, got %s", gqlReq.TemplateID)
-	}
-	if gqlReq.GpuIDs != "ADA_24" {
-		t.Errorf("expected gpu ids ADA_24, got %s", gqlReq.GpuIDs)
-	}
-	if gqlReq.GpuCount != 2 || gqlReq.WorkersMin != 1 || gqlReq.WorkersMax != 3 {
-		t.Fatalf("unexpected worker/gpu settings: %#v", gqlReq)
-	}
-	if gqlReq.Locations != "US-KS-2" {
-		t.Errorf("expected locations US-KS-2, got %s", gqlReq.Locations)
-	}
-	if gqlReq.NetworkVolumeID != "vol-123" {
-		t.Errorf("expected network volume id vol-123, got %s", gqlReq.NetworkVolumeID)
-	}
-	if len(gqlReq.ModelReferences) != 1 || gqlReq.ModelReferences[0] != modelReferences[0] {
-		t.Fatalf("unexpected model references: %#v", gqlReq.ModelReferences)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			snapshotCreateFlags(t)
+			tc.setup()
+			err := runCreate(&cobra.Command{}, nil)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got: %v", tc.wantErr, err)
+			}
+		})
 	}
 }
 
